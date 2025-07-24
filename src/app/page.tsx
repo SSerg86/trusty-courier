@@ -13,6 +13,11 @@ export default function HomePage() {
   const [error, setError] = useState("");
   const [passwordReveal, setPasswordReveal] = useState("");
   const [isPasswordProtected, setIsPasswordProtected] = useState(false);
+  const [retrievedData, setRetrievedData] = useState<{
+    encryptedData: string;
+    passwordHash?: string;
+  } | null>(null);
+  const [passwordAttempts, setPasswordAttempts] = useState(0);
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [toast, setToast] = useState("");
 
@@ -64,14 +69,6 @@ export default function HomePage() {
   useEffect(() => {
     if (isMounted && window.location.hash) {
       setView("reveal");
-      try {
-        const decodedData = atob(window.location.hash.substring(1));
-        const parts = decodedData.split(":::");
-        setIsPasswordProtected(parts[0] === "p_true");
-      } catch (e) {
-        setError("Invalid link format.");
-        setView("error");
-      }
     }
   }, [isMounted]);
 
@@ -81,21 +78,17 @@ export default function HomePage() {
       return;
     }
 
-    let encrypted;
-    let finalKey;
-    let isPwdProtected = false;
+    const key = CryptoJS.lib.WordArray.random(32).toString();
+    const encrypted = CryptoJS.AES.encrypt(secret, key).toString();
 
+    let passwordHash;
     if (password) {
-      finalKey = password;
-      encrypted = CryptoJS.AES.encrypt(secret, finalKey).toString();
-      isPwdProtected = true;
-    } else {
-      finalKey = CryptoJS.lib.WordArray.random(32).toString();
-      encrypted = CryptoJS.AES.encrypt(secret, finalKey).toString();
+      passwordHash = CryptoJS.SHA256(password).toString();
     }
 
     const dataToStore = {
       encryptedData: encrypted,
+      passwordHash: passwordHash,
     };
 
     try {
@@ -106,12 +99,7 @@ export default function HomePage() {
       });
       const { id } = await response.json();
 
-      const dataToEncodeInUrl = isPwdProtected
-        ? `p_true`
-        : `p_false:::${finalKey}`;
-      const newLink = `${window.location.origin}/?id=${id}#${btoa(
-        dataToEncodeInUrl
-      )}`;
+      const newLink = `${window.location.origin}/?id=${id}#${btoa(key)}`;
       setLink(newLink);
       setView("link");
     } catch {
@@ -129,30 +117,88 @@ export default function HomePage() {
       if (!response.ok) {
         throw new Error("Secret not found or already viewed.");
       }
-      const { encryptedData } = await response.json();
+      const data = await response.json();
+      setRetrievedData(data); // Store fetched data in state
 
-      if (isPasswordProtected) {
-        // Decrypt with user-provided password
-        const decrypted = CryptoJS.AES.decrypt(encryptedData, passwordReveal);
-        const originalText = decrypted.toString(CryptoJS.enc.Utf8);
-        if (!originalText)
-          throw new Error("Decryption failed. Incorrect password.");
-        setSecretOutput(originalText);
+      if (data.passwordHash) {
+        // Password is required, so we prompt for it
+        setView("password_prompt");
       } else {
-        // Decrypt with key from URL
-        const key = atob(window.location.hash.substring(1)).split(":::")[1];
-        const decrypted = CryptoJS.AES.decrypt(encryptedData, key);
-        const originalText = decrypted.toString(CryptoJS.enc.Utf8);
-        setSecretOutput(originalText);
+        // No password, decrypt immediately
+        decryptAndShow(data.encryptedData);
       }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to retrieve secret.");
+      setView("error");
+    }
+  };
+
+  const handleDecryptWithPassword = () => {
+    const MAX_ATTEMPTS = 3;
+
+    if (!retrievedData || !retrievedData.passwordHash) {
+      setError("An unexpected error occurred.");
+      setView("error");
+      return;
+    }
+
+    const providedPasswordHash = CryptoJS.SHA256(passwordReveal).toString();
+    if (providedPasswordHash !== retrievedData.passwordHash) {
+      const newAttemptCount = passwordAttempts + 1;
+      setPasswordAttempts(newAttemptCount);
+
+      if (newAttemptCount >= MAX_ATTEMPTS) {
+        // Destroy the secret
+        const params = new URLSearchParams(window.location.search);
+        const id = params.get("id");
+        fetch("/api/secret", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id }),
+        });
+        setError("Too many incorrect attempts. The secret has been destroyed.");
+        setView("error");
+      } else {
+        setError(
+          `Incorrect password. You have ${
+            MAX_ATTEMPTS - newAttemptCount
+          } attempts remaining.`
+        );
+      }
+      return;
+    }
+
+    decryptAndShow(retrievedData.encryptedData);
+  };
+
+  const decryptAndShow = (encryptedData: string) => {
+    try {
+      const key = atob(window.location.hash.substring(1));
+      const decrypted = CryptoJS.AES.decrypt(encryptedData, key);
+      const originalText = decrypted.toString(CryptoJS.enc.Utf8);
+      if (!originalText) {
+        throw new Error("Decryption failed. The key in the link is invalid.");
+      }
+      setSecretOutput(originalText);
       setView("revealed");
       history.replaceState(null, "", "/");
     } catch (e: unknown) {
-      setError(
-        e instanceof Error ? e.message : "Failed to retrieve or decrypt secret."
-      );
+      setError(e instanceof Error ? e.message : "Failed to decrypt secret.");
       setView("error");
     }
+  };
+
+  const handleCreateNew = () => {
+    setView("create");
+    setSecret("");
+    setPassword("");
+    setLink("");
+    setError("");
+  };
+
+  const copySecretToClipboard = () => {
+    navigator.clipboard.writeText(secretOutput);
+    showToast("Secret copied to clipboard!");
   };
 
   const copyToClipboard = () => {
@@ -211,33 +257,75 @@ export default function HomePage() {
             <h2>Your secure link is ready:</h2>
             <input type="text" value={link} readOnly />
             <button onClick={copyToClipboard}>Copy Link</button>
+            <button onClick={handleCreateNew} className="secondary-button">
+              Create New
+            </button>
           </div>
         )}
 
         {view === "reveal" && (
           <div id="view-secret-view">
             <h1>You have received a secret</h1>
-            {isPasswordProtected && (
-              <div id="password-prompt">
-                <h2>This secret is password-protected.</h2>
-                <input
-                  type="password"
-                  value={passwordReveal}
-                  onChange={(e) => setPasswordReveal(e.target.value)}
-                  placeholder="Enter the secret word..."
-                />
-              </div>
-            )}
             <button id="reveal-btn" onClick={handleRevealSecret}>
               Reveal Secret
             </button>
           </div>
         )}
 
+        {view === "password_prompt" && (
+          <div id="password-prompt-view">
+            <h1>Password Required</h1>
+            <input
+              type="password"
+              value={passwordReveal}
+              onChange={(e) => setPasswordReveal(e.target.value)}
+              placeholder="Enter the secret word..."
+            />
+            <button
+              onClick={handleDecryptWithPassword}
+              disabled={!passwordReveal}
+            >
+              Decrypt
+            </button>
+            {error && (
+              <p style={{ color: "red", marginTop: "1rem" }}>{error}</p>
+            )}
+          </div>
+        )}
+
         {view === "revealed" && (
           <div id="secret-display">
             <h2>The secret is:</h2>
-            <p id="secret-output">{secretOutput}</p>
+            <div className="secret-output-wrapper">
+              <p id="secret-output">{secretOutput}</p>
+              <button
+                onClick={copySecretToClipboard}
+                className="copy-icon-button"
+                title="Copy secret"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+              </button>
+            </div>
+            <button
+              onClick={handleCreateNew}
+              className="secondary-button"
+              style={{ marginTop: "1.5rem" }}
+            >
+              Create Your Own Secret
+            </button>
           </div>
         )}
 

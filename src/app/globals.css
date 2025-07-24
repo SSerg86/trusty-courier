@@ -53,6 +53,18 @@ button:hover {
     background-color: #2980b9;
 }
 
+.secondary-button {
+    background-color: transparent;
+    color: #3498db;
+    border: 1px solid #3498db;
+    margin-left: 0.5rem;
+}
+
+.secondary-button:hover {
+    background-color: #3498db;
+    color: white;
+}
+
 #reveal-btn {
     background-color: #e74c3c;
 }
@@ -77,6 +89,29 @@ button:hover {
     word-wrap: break-word;
     white-space: pre-wrap;
 }
+
+.secret-output-wrapper {
+    position: relative;
+}
+
+.copy-icon-button {
+    position: absolute;
+    bottom: 1px;
+    right: 1px;
+    background: transparent;
+    border: none;
+    padding: 0.5rem;
+    cursor: pointer;
+    color: #7f8c8d;
+    opacity: 0.6;
+    transition: opacity 0.3s;
+}
+
+.copy-icon-button:hover {
+    opacity: 1;
+    background: transparent;
+}
+
 
 #how-it-works {
     position: absolute;
